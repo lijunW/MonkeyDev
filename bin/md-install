@@ -307,10 +307,15 @@ if [[ "$1" ]]; then
 fi
 
 #下载一些基础文件和模板文件
-downloadGithubTarball "https://codeload.github.com/AloneMonkey/MonkeyDev/tar.gz/$branch" "$MonkeyDevPath" "MonkeyDev base"
-downloadGithubTarball "https://codeload.github.com/AloneMonkey/MonkeyDev-Xcode-Templates/tar.gz/$branch" "$MonkeyDevPath/templates" "Xcode templates"
+#downloadGithubTarball "https://codeload.github.com/AloneMonkey/MonkeyDev/tar.gz/$branch" "$MonkeyDevPath" "MonkeyDev base"
+#downloadGithubTarball "https://codeload.github.com/AloneMonkey/MonkeyDev-Xcode-Templates/tar.gz/$branch" "$MonkeyDevPath/templates" "Xcode templates"
 
 #下载frida-ios-dump
+#echo "Downloading frida-ios-dump from Github..."
+#downloadFile "https://raw.githubusercontent.com/AloneMonkey/frida-ios-dump/3.x/dump.py" "$MonkeyDevPath/bin/dump.py"
+#downloadFile "https://raw.githubusercontent.com/AloneMonkey/frida-ios-dump/3.x/dump.js" "$MonkeyDevPath/bin/dump.js"
+
+chmod +x "$MonkeyDevPath/bin/dump.py"
 
 #创建符号链接
 echo "Creating symlink to Xcode templates..."
@@ -339,5 +344,41 @@ addToFileIfMissing "$userBashProfileFile" "^(export)? *MonkeyDevDeviceIP=.*" "ex
 addToFileIfMissing "$userBashProfileFile" "^(export)? *PATH=.*(\\\$MonkeyDevPath\\/bin|${MonkeyDevPath//\//\\/}\\/bin).*" "export PATH=$MonkeyDevPath/bin:\$PATH"
 
 #支持iphoneos command line tools
+iosSdkPlatformPath=`getSdkProperty iphoneos PlatformPath`
+macosSdkPlatformPath=`getSdkProperty macosx PlatformPath`
+
+#specificationFile=$(cd $iosSdkPlatformPath/../../.. && pwd)/PlugIns/IDEiOSSupportCore.ideplugin/Contents/Resources/Embedded-Device.xcspec
+specificationFile=$(cd $iosSdkPlatformPath/../../.. && pwd)/SharedFrameworks/XCBuild.framework/Versions/A/PlugIns/XCBBuildService.bundle/Contents/PlugIns/XCBSpecifications.ideplugin/Contents/Resources/Embedded-Device.xcspec
+
+requireFile "$specificationFile" false
+
+echo "AAAA"
+
+#backup
+#requireBackup "$specificationFile"
+echo "⚠️ 此处跳过了对specificationFile($specificationFile)的备份"
+
+
+hasPackageTypeForCommandLineTool=`doesFileContain "$specificationFile" 'com.apple.package-type.mach-o-executable'`
+hasProductTypeForCommandLineTool=`doesFileContain "$specificationFile" 'com.apple.product-type.tool'`
+
+#macosxSDKSpecificationsPath=$macosSdkPlatformPath/Developer/Library/Xcode/Specifications
+macosxSDKSpecificationsPath="$(cd $macosSdkPlatformPath/../../.. && pwd)/SharedFrameworks/XCBuild.framework/Versions/A/PlugIns/XCBBuildService.bundle/Contents/PlugIns/XCBSpecifications.ideplugin/Contents/Resources"
+
+packageTypesForMacOSXPath="$macosxSDKSpecificationsPath/MacOSX Package Types.xcspec"
+productTypesForMacOSXPath="$macosxSDKSpecificationsPath/MacOSX Product Types.xcspec"
+
+requireFile "$packageTypesForMacOSXPath" false
+requireFile "$productTypesForMacOSXPath" false
+
+if [[ $hasPackageTypeForCommandLineTool != "true" ]]; then
+	machoDict=`readXcodeSpecificationById "$packageTypesForMacOSXPath" "com.apple.package-type.mach-o-executable"`
+	writeDictToSpecification "$specificationFile" "$machoDict"
+fi
+
+if [[ $hasProductTypeForCommandLineTool != "true" ]]; then
+	toolDict=`readXcodeSpecificationById "$productTypesForMacOSXPath" "com.apple.product-type.tool"`
+	writeDictToSpecification "$specificationFile" "$toolDict"
+fi
 
 exit 0
