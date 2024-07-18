@@ -1,6 +1,9 @@
 #!/bin/bash
 
+source ~/.zshrc
+
 export setCmd="set -eo pipefail"
+export PATH=/opt/homebrew/bin:$PATH
 $setCmd
 
 export PATH=/opt/MonkeyDev/bin:$MonkeyDevTheosPath/bin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH
@@ -180,7 +183,7 @@ function requireFile() # args: filePath [, touchFileIfNotFound]
 				panic $? "Failed to touch $filePath"
 				
 		else
-			panic 1 "File $filePath not found"
+			panic 1 "验证文件: $filePath not found"
 		fi
 	fi
 }
@@ -377,13 +380,19 @@ function getPackageFileNameUsingControlFile() # args: controlFile
 	local pkgId
 	local pkgVer
 	local pkgArch
+	local rootless=""
 		
 	pkgId=`getControlFieldValue "$controlFile" Package true`
 	pkgVer=`getControlFieldValue "$controlFile" Version true`
 	pkgArch=`getControlFieldValue "$controlFile" Architecture true`
 
+	requireExportedVariable "MonkeyDevRootless"
+    if [[ $MonkeyDevRootless == "YES" ]]; then
+        rootless="_rootless"
+    fi
+
 	# return #
-	echo "${pkgId}_${pkgVer}_${pkgArch}"
+    echo "${pkgId}_${pkgVer}_${pkgArch}${rootless}"
 }
 
 #打包
@@ -396,7 +405,7 @@ function buildPackage() # args: packageDir, outputDir [, useZOption]
 	local packageFileName
 	local packageName
 	local zipFileName
-	
+
 	echo "Preparing to build package..."
 	
 	# verify arguments #
@@ -417,10 +426,10 @@ function buildPackage() # args: packageDir, outputDir [, useZOption]
 	changeMode 0755 "$packageDir/DEBIAN/postinst"
 	changeMode 0755 "$packageDir/DEBIAN/prerm"
 	changeMode 0755 "$packageDir/DEBIAN/postrm"
-	
+
 	# determine package name #
 	packageName=`getPackageFileNameUsingControlFile "$packageDir/DEBIAN/control"`
-		
+
 	# create package #
 	createDebianPackage "$packageDir" "$packageName" "$outputDir"
 	
@@ -455,14 +464,38 @@ function createDebianPackage() # args: sourceDir, packageName [, outputDir]
 	local outputDir="$3"
 	
 	local packageFile="${outputDir:-.}/$packageName.deb"
-	
-	echo -n "Building package $packageFileName... "
-
 	local tempDir="`getTempDir`"
+
+	echo -n "Building package $packageFileName... "
 	
-	createTarForDebianPackage "$sourceDir/DEBIAN" "$tempDir" "control" "-n"
-	createTarForDebianPackage "$sourceDir" "$tempDir" "data" "--exclude" "DEBIAN/*" "--exclude" "DEBIAN"
-	
+
+	#打包有根越狱
+	#添加无根越狱的支持
+	requireExportedVariable "MonkeyDevRootless"
+	if [[ $MonkeyDevRootless == "YES" ]]; then
+		echo "正在打包: $packageFile"
+		echo "临时目录: $tempDir"
+		echo "源码目录: $sourceDir"
+		# 复制要安装的目标到构建目录 
+		local lastBuildPackageDir="$PROJECT_DIR/LatestBuild/Package/"
+		local lastBuildJbDir="$lastBuildPackageDir/var/jb"
+		echo "编译目录: $lastBuildJbDir"
+
+		# 如果目录不存在则创建
+		if [ ! -d lastBuildJbDir ]; then
+			mkdir -p "$lastBuildJbDir"
+		fi
+		# 按有根或无根模式复制到编译目录下, 复制时排除DEBIAN目录
+		echo "复制文件到/var/jb目录下:"
+		rsync -av --exclude="DEBIAN" "$sourceDir/" "$lastBuildJbDir/"
+		createTarForDebianPackage "$sourceDir/DEBIAN" "$tempDir" "control" "-n"
+		createTarForDebianPackage "$lastBuildPackageDir" "$tempDir" "data" "--exclude" "DEBIAN/*" "--exclude" "DEBIAN"
+	else 
+		# 打包有根越狱deb
+		createTarForDebianPackage "$sourceDir/DEBIAN" "$tempDir" "control" "-n"
+		createTarForDebianPackage "$sourceDir" "$tempDir" "data" "--exclude" "DEBIAN/*" "--exclude" "DEBIAN"
+	fi
+
 	echo "2.0" > "$tempDir/debian-binary" || \
 		panic $? "Failed to create debian-binary file"
 	
@@ -484,7 +517,9 @@ function createTarForDebianPackage() # args: sourceDir, outputDir, tarName [, op
 	
 	pushd "$sourceDir" 1> /dev/null
 
-	tar -cLpz --disable-copyfile --exclude ".*" "$@" -f "$outputDir/$tarName.tar.gz" * || \
+	#tar -cLpz --disable-copyfile --exclude ".*" "$@" -f "$outputDir/$tarName.tar.gz" * || \
+	#	panic $? "Failed to create $tarName archive"
+	gtar -chpz --exclude ".*" "$@" -f "$outputDir/$tarName.tar.gz" * || \
 		panic $? "Failed to create $tarName archive"
 
 	popd 1> /dev/null
@@ -679,7 +714,7 @@ function Processor()
 
 # 	--xcbp-logos
 function xcodeBuildPhase_Logos() # no args
-{
+{	
 	[[ "$ACTION" == "build" ]] || \
 		panic 1 "For Xcode Build Phase use only, Not support Archive, Please use LatestBuild/createIPA.command to generate ipa."
 	
@@ -698,6 +733,7 @@ function xcodeBuildPhase_Logos() # no args
 	local projectXFiles
 	local logosStdErr
 	local logosErr=0
+	local controlPath="$PROJECT_DIR/$PROJECT_NAME/Package/DEBIAN/control"
 	
 	[[ -f "$pbxProjectFilePath" ]] || \
 		panic 1 "Xcode project file not found: $pbxProjectFilePath"
@@ -707,6 +743,35 @@ function xcodeBuildPhase_Logos() # no args
 		panic $? "Failed to locate Logos Processor. Is Theos installed? If not, see https://github.com/theos/theos/wiki/Installation."
 
 	# for each *.xm project file, use Logos Processor to generate *.mm file
+
+	# 修改arch
+	echo "修改arc指令集: $MonkeyDevRootless"
+	# requireExportedVariable "MonkeyDevRootless"
+	if [[ -n $MonkeyDevRootless ]]; then
+		if [[ -f "$controlPath" ]]; then
+		    if [[ $MonkeyDevRootless == "YES" ]]; then
+		    	# 删除属性
+		    	while grep -q '^Architecture:' "$controlPath"; do
+		    		sed -i '' '/^Architecture:/d' "$controlPath"
+				done
+		    	while grep -q '^$' "$controlPath"; do
+		    		sed -i '' '/^$/d' "$controlPath"
+		    	done
+		    	# 添加属性
+		        echo "Architecture: iphoneos-arm64" >> "$controlPath"
+		    else
+		    	# 删除属性
+		    	while grep -q '^Architecture:' "$controlPath"; do
+		    		sed -i '' '/^Architecture:/d' "$controlPath"
+				done
+		    	while grep -q '^$' "$controlPath"; do
+		    		sed -i '' '/^$/d' "$controlPath"
+		    	done
+		    	# 添加属性
+		        echo "Architecture: iphoneos-arm" >> "$controlPath"
+		    fi
+		fi
+	fi
 
 	Processor "$logosProcessor" "$PROJECT_DIR"
 
@@ -738,6 +803,9 @@ function xcodeBuildPhase() # no args
 	local stripBin
 	local stripOption
 	local packageFileName
+	local controlPath="$PROJECT_DIR/$PROJECT_NAME/Package/DEBIAN/control"
+
+	echo "安装目录: $packageInstallPath"
 	
 	#目标文件路径
 	local packageInstallSource
@@ -765,6 +833,52 @@ function xcodeBuildPhase() # no args
 	
 	#创建最后一个编译的符号链接
 	createSymlink "$builtProductsDir" "$latestBuildSymlink"
+
+	#添加无根越狱的支持
+	requireExportedVariable "MonkeyDevRootless"
+
+	# 修改arch
+	echo "修改arc指令集: $MonkeyDevRootless"
+    # requireExportedVariable "MonkeyDevRootless"
+	if [[ -n $MonkeyDevRootless ]]; then
+		if [[ -f "$controlPath" ]]; then
+		    if [[ $MonkeyDevRootless == "YES" ]]; then
+		    	# 删除属性
+		    	while grep -q '^Architecture:' "$controlPath"; do
+		    		sed -i '' '/^Architecture:/d' "$controlPath"
+				done
+		    	while grep -q '^$' "$controlPath"; do
+		    		sed -i '' '/^$/d' "$controlPath"
+		    	done
+		    	# 添加属性
+		        echo "Architecture: iphoneos-arm64" >> "$controlPath"
+		    else
+		    	# 删除属性
+		    	while grep -q '^Architecture:' "$controlPath"; do
+		    		sed -i '' '/^Architecture:/d' "$controlPath"
+				done
+		    	while grep -q '^$' "$controlPath"; do
+		    		sed -i '' '/^$/d' "$controlPath"
+		    	done
+		    	# 添加属性
+		        echo "Architecture: iphoneos-arm" >> "$controlPath"
+		    fi
+		fi
+	fi
+
+	if [[ $MonkeyDevRootless == "YES" ]]; then
+		echo "正在替换CydiaFramework依赖路径: $builtExecutable"
+		#这里将默认的/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate路径替换为@rpath/CydiaSubstrate.framework/CydiaSubstrate
+		# 检查是否已经存在 RPATH
+		if ! otool -l "$builtExecutable" | grep -q "LC_RPATH"; then
+			echo "添加依赖库: $MonkeyDevRootless"
+			install_name_tool -add_rpath "/var/jb/Library/Frameworks" "$builtExecutable"
+			install_name_tool -add_rpath "/var/jb/usr/lib" "$builtExecutable"
+			install_name_tool -add_rpath "@loader_path/.jbroot/Library/Frameworks" "$builtExecutable"
+			install_name_tool -add_rpath "@loader_path/.jbroot/usr/lib" "$builtExecutable"
+			install_name_tool -change /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate @rpath/CydiaSubstrate.framework/CydiaSubstrate "$builtExecutable"
+		fi
+	fi
 
 	#如果是Profile，strip可执行文件
 	if [[ "$CONFIGURATION" == "Release" && "$VALIDATE_PRODUCT" == "YES" ]]; then
@@ -813,10 +927,12 @@ function xcodeBuildPhase() # no args
 	
 	fi
 
+	echo "请根据您的越狱类型设置 Build Setting -> MonkeyDevRootless 的值"
+
 	#如果是profie或者用户设置了每次build都install或package，生成deb
 	if [[ "$CONFIGURATION" == "Release" && "$VALIDATE_PRODUCT" == "YES" ]] || [[ "$MonkeyDevInstallOnAnyBuild" == "YES" ]] || [[ "$MonkeyDevBuildPackageOnAnyBuild" == "YES" ]]; then
 		requireDir "$packageDirectory"
-		#准备打包
+		#准备打包, 复制编译的输出文件到Package下
 		echo "Copying $packageInstallSource to package directory at $packageInstallPath..."
 		
 		requireDir "$packageInstallPath" true
@@ -825,7 +941,7 @@ function xcodeBuildPhase() # no args
 		copyFile "$packageInstallSource" "$packageInstallPath"
 
 		buildPackage "$packageDirectory" "$allPackagesDir" true
-		
+
 		#profile或者用户设置了build安装
 		if [[ "$CONFIGURATION" == "Release" && "$VALIDATE_PRODUCT" == "YES" ]] || [[ "$MonkeyDevInstallOnAnyBuild" == "YES" ]]; then
 		
